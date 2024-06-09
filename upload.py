@@ -1,24 +1,22 @@
-import openai
 import requests
 import os
 import shutil
 from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip, TextClip
 from dotenv import load_dotenv
+from openai import OpenAI
+from pathlib import Path
 
 # Load environment variables
 load_dotenv()
 
-# Initiate OpenAI client
-openai.api_key = os.getenv('OPENAI_API_KEY')
-
-# Set your Eleven Labs API key
-elevenlabs_api_key = os.getenv('elevenlabs_api_key')
-elevenlabs_voice_id = os.getenv('elevenlabs_voice_id')  # Replace with your chosen voice ID from Eleven Labs
+client = OpenAI()
+# Set your OpenAI API key
+client.api_key = os.getenv('OPENAI_API_KEY')
 
 # Function to generate random facts and interesting texts based on a topic
 def generate_facts(topic):
-    prompt = f"Generate 10 random interesting facts about {topic} in a narrative style, making it long."
-    response = openai.Completion.create(
+    prompt = f"Generate 10 random interesting facts about {topic} and making it long."
+    response = client.completions.create(
         model="gpt-3.5-turbo-instruct",
         prompt=prompt,
         max_tokens=500
@@ -28,8 +26,8 @@ def generate_facts(topic):
 
 # Function to generate an image query based on a topic
 def TTIQ(topic):
-    prompt = f"Generate an image query based on {topic}. and please follow OPENAI safty rules"
-    response = openai.Completion.create(
+    prompt = f"Generate an image query for dall-e based on {topic}."
+    response = client.completions.create(
         model="gpt-3.5-turbo-instruct",
         prompt=prompt,
         max_tokens=500
@@ -39,12 +37,13 @@ def TTIQ(topic):
 
 # Function to generate an image based on a prompt
 def generate_image(prompt):
-    response = openai.Image.create(
+    response = client.images.generate(
+        model="dall-e-2",
         prompt=prompt,
         n=1,
         size="1024x1024"
     )
-    image_url = response['data'][0]['url']
+    image_url = response.data[0].url
     return image_url
 
 # Function to download an image from a URL
@@ -53,36 +52,22 @@ def download_image(url, filename):
     with open(filename, 'wb') as handler:
         handler.write(image_data)
 
-# Function to convert text to speech using Eleven Labs and save as an MP3 file
+# Function to convert text to speech using OpenAI TTS and save as an MP3 file
 def text_to_speech(text, filename):
-    response = requests.post(
-        f'https://api.elevenlabs.io/v1/text-to-speech/{elevenlabs_voice_id}',
-        headers={
-            'Accept': 'audio/mpeg',
-            'Content-Type': 'application/json',
-            'xi-api-key': elevenlabs_api_key
-        },
-        json={
-            'text': text,
-            'voice_settings': {
-                'stability': 0.75,
-                'similarity_boost': 0.75
-            }
-        }
+    speech_file_path = Path(__file__).parent / filename
+    response = client.audio.speech.create(
+        model="tts-1",
+        voice="onyx",
+        input=text
     )
-    if response.status_code == 200:
-        with open(filename, 'wb') as f:
-            f.write(response.content)
-    else:
-        print(f"Failed to generate speech: {response.status_code}")
-        print(response.json())
+    response.stream_to_file(speech_file_path)
 
 # Function to animate images with text
 def create_image_clips(images, facts):
     clips = []
     for i, (image, fact) in enumerate(zip(images, facts)):
         image_clip = ImageClip(image).set_duration(5)
-        text_clip = TextClip(fact, fontsize=24, color='white', size=(1024, 100)).set_position('bottom').set_duration(5)
+        text_clip = TextClip(fact, fontsize=24, color='white', size=(500, 150)).set_position('bottom').set_duration(5)
         video = CompositeVideoClip([image_clip, text_clip])
         clips.append(video)
     return clips
@@ -98,15 +83,17 @@ def create_video(topic):
     try:
         # Step 1: Generate random facts based on the topic
         facts = generate_facts(topic)
-        print(f"Generated Facts: {facts}")
+        print(f"Facts Generated:")
 
         # Step 2: Generate images related to the topic
         images = []
-        for i in range(10):
+        for i in range(5):
             image_prompt = f"{topic} fact {i+1}: {facts[i]}"
             topic_to_image_query = TTIQ(image_prompt)
             image_url = generate_image(topic_to_image_query)
-            image_filename = os.path.join(images_dir, f'generated_image_{i}.jpg')
+            #show progress
+            print(f"{i+1} st image generated")
+            image_filename = os.path.join(images_dir, f'generated_image_{i+1}.jpg')
             download_image(image_url, image_filename)
             images.append(image_filename)
 
@@ -123,7 +110,7 @@ def create_video(topic):
         final_video = final_clip.set_audio(audio_clip)
 
         # Export the final video
-        final_video.write_videofile(f"{topic}.mp4", codec= "libx264", fps=24)
+        final_video.write_videofile(f"{topic}.mp4", codec= "libx264", fps=24, ffmpeg_params=["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2"])
     
     finally:
         # Remove the images directory after the process
